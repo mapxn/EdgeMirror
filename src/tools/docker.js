@@ -78,12 +78,19 @@ export default {
         // 5. 路由解析逻辑
         let upstream = DEFAULT_UPSTREAM;
         let pathParts = url.pathname.split('/');
-        let potentialRoute = pathParts[1]; // 获取第一个路径段，如 /quay/...
-        
+        let potentialRoute = pathParts[1]; // 获取第一个路径段，如 /quay/v2/...
+        // 真实 docker 客户端请求形如 /v2/ghcr/yusing/godoxy/manifests/latest，
+        // 路由前缀出现在 /v2/ 之后而非路径最开头，需要单独识别
+        let v2RoutePrefix = potentialRoute === 'v2' ? pathParts[2] : null;
+
         if (ROUTES[potentialRoute]) {
-            // 命中路由表 (例如 quay, gcr)
+            // 命中路由表 (虚拟主机前缀形式，例如 /quay/v2/...)
             upstream = ROUTES[potentialRoute];
             url.pathname = url.pathname.replace(`/${potentialRoute}`, '');
+        } else if (v2RoutePrefix && ROUTES[v2RoutePrefix]) {
+            // 命中路由表 (真实 docker pull 形式，例如 /v2/ghcr/yusing/godoxy/manifests/latest)
+            upstream = ROUTES[v2RoutePrefix];
+            url.pathname = url.pathname.replace(`/v2/${v2RoutePrefix}`, '/v2');
         } else {
             // 处理 Token 请求：优先使用上游在 Www-Authenticate 中声明的真实 realm
             // (通过 __realm 参数回传，见下方第 8 步)，否则回退到 Docker Hub 的认证服务器
