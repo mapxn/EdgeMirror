@@ -85,12 +85,21 @@ export default {
             upstream = ROUTES[potentialRoute];
             url.pathname = url.pathname.replace(`/${potentialRoute}`, '');
         } else {
-            // 默认为 Docker Hub，处理 Token 和 Library 补全
+            // 处理 Token 请求：优先使用上游在 Www-Authenticate 中声明的真实 realm
+            // (通过 __realm 参数回传，见下方第 8 步)，否则回退到 Docker Hub 的认证服务器
             if (url.pathname.includes('/token')) {
-                const tokenUrl = new URL("https://auth.docker.io" + url.pathname + url.search);
+                const explicitRealm = url.searchParams.get('__realm');
+                const tokenUrl = explicitRealm
+                    ? new URL(explicitRealm)
+                    : new URL("https://auth.docker.io" + url.pathname);
+                for (const [key, value] of url.searchParams) {
+                    if (key === '__realm') continue;
+                    tokenUrl.searchParams.set(key, value);
+                }
+
                 const scope = tokenUrl.searchParams.get('scope');
-                // 自动补全 library 权限 (pull nginx -> pull library/nginx)
-                if (scope) {
+                // 自动补全 library 权限 (pull nginx -> pull library/nginx)，仅对 Docker Hub 生效
+                if (!explicitRealm && scope) {
                     const scopeParts = scope.split(':');
                     if (scopeParts.length === 3 && scopeParts[0] === 'repository' && !scopeParts[1].includes('/')) {
                         const newScope = `repository:library/${scopeParts[1]}:${scopeParts[2]}`;
@@ -127,10 +136,15 @@ export default {
         const responseHeaders = new Headers(response.headers);
         const status = response.status;
 
-        // 8. 修改 Www-Authenticate 头 (指向 Worker)
+        // 8. 修改 Www-Authenticate 头 (指向 Worker)，非 Docker Hub 上游需回传真实 realm
+        // 供 /token 处理逻辑区分认证服务器 (见上方第 5 步)
         const authHeader = responseHeaders.get("Www-Authenticate");
         if (authHeader) {
-            responseHeaders.set("Www-Authenticate", authHeader.replace(/realm="([^"]+)"/, `realm="${workerUrl}/token"`));
+            const realmMatch = authHeader.match(/realm="([^"]+)"/);
+            const proxiedRealm = realmMatch && upstream !== DEFAULT_UPSTREAM
+                ? `${workerUrl}/token?__realm=${encodeURIComponent(realmMatch[1])}`
+                : `${workerUrl}/token`;
+            responseHeaders.set("Www-Authenticate", authHeader.replace(/realm="([^"]+)"/, `realm="${proxiedRealm}"`));
         }
 
         // 9. 【核心修复】拦截 S3 重定向
